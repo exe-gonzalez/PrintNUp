@@ -185,6 +185,8 @@ body {
 .nup-4  { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
 .nup-6  { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
 .nup-8  { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.nup-16 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); }
+.nup-32 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); } /* misma grilla visual, escala */
 
 /* Generamos los pseudo-hijos con box-shadow para los iconos */
 .nup-btn .nup-icon { position: relative; overflow: hidden; }

@@ -180,6 +180,8 @@ function getGridLayout(nup, orientation) {
     case 4:  return { cols: 2, rows: 2 }; // igual en ambas
     case 6:  return isLandscape ? { cols: 3, rows: 2 } : { cols: 2, rows: 3 };
     case 8:  return isLandscape ? { cols: 4, rows: 2 } : { cols: 2, rows: 4 };
+    case 16: return isLandscape ? { cols: 4, rows: 4 } : { cols: 4, rows: 4 }; // 4×4 en ambas
+    case 32: return isLandscape ? { cols: 8, rows: 4 } : { cols: 4, rows: 8 };
     default: return { cols: 2, rows: 2 };
   }
 }
