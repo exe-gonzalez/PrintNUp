@@ -5,12 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PrintNUp — Múltiples páginas por hoja</title>
   <link rel="stylesheet" href="styles.css" />
-  <!-- PDF.js desde CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
 
-  <!-- ===================== HEADER ===================== -->
   <header class="app-header">
     <div class="header-inner">
       <div class="logo">
@@ -21,42 +19,34 @@
     </div>
   </header>
 
-  <!-- ===================== CONTROLES ===================== -->
   <main class="app-main">
     <section class="controls-bar">
 
       <!-- Selector de páginas por hoja -->
       <div class="control-group">
-        <label class="control-label">Páginas por hoja</label>
-        <div class="nup-selector" id="nupSelector">
-          <button class="nup-btn active" data-nup="2">
-            <span class="nup-icon nup-2"></span>
-            <span>2</span>
-          </button>
-          <button class="nup-btn" data-nup="3">
-            <span class="nup-icon nup-3"></span>
-            <span>3</span>
-          </button>
-          <button class="nup-btn" data-nup="4">
-            <span class="nup-icon nup-4"></span>
-            <span>4</span>
-          </button>
-          <button class="nup-btn" data-nup="6">
-            <span class="nup-icon nup-6"></span>
-            <span>6</span>
-          </button>
-          <button class="nup-btn" data-nup="8">
-            <span class="nup-icon nup-8"></span>
-            <span>8</span>
-          </button>
-          <button class="nup-btn" data-nup="16">
-            <span class="nup-icon nup-16"></span>
-            <span>16</span>
-          </button>
-          <button class="nup-btn" data-nup="32">
-            <span class="nup-icon nup-32"></span>
-            <span>32</span>
-          </button>
+        <label class="control-label" for="nupSelect">Páginas por hoja</label>
+        <div class="nup-select-wrapper">
+          <select id="nupSelect" class="nup-select">
+            <option value="2">2 páginas</option>
+            <option value="3">3 páginas</option>
+            <option value="4">4 páginas</option>
+            <option value="6">6 páginas</option>
+            <option value="8">8 páginas</option>
+            <option value="10">10 páginas</option>
+            <option value="12">12 páginas</option>
+            <option value="14">14 páginas</option>
+            <option value="16">16 páginas</option>
+            <option value="18">18 páginas</option>
+            <option value="20">20 páginas</option>
+            <option value="22">22 páginas</option>
+            <option value="24">24 páginas</option>
+            <option value="26">26 páginas</option>
+            <option value="28">28 páginas</option>
+            <option value="30">30 páginas</option>
+            <option value="32">32 páginas</option>
+          </select>
+          <!-- Canvas miniatura que muestra la grilla resultante -->
+          <canvas id="nupPreview" class="nup-preview" width="52" height="40"></canvas>
         </div>
       </div>
 
@@ -109,31 +99,30 @@
 
     </section>
 
-    <!-- ===================== INDICADOR ORIENTACIÓN ===================== -->
+    <!-- Indicador de estado -->
     <div class="orientation-indicator" id="orientationIndicator">
       <span class="orient-badge" id="orientBadge">▯ Vertical — Auto</span>
       <span class="slot-count" id="slotCount">0 / 2 espacios usados</span>
     </div>
 
-    <!-- ===================== ESTADO DE CARGA ===================== -->
+    <!-- Loading overlay -->
     <div class="loading-overlay" id="loadingOverlay" style="display:none;">
       <div class="loading-spinner"></div>
       <p>Procesando archivos…</p>
     </div>
 
-    <!-- ===================== HOJA A4 PREVIEW ===================== -->
+    <!-- Vista previa A4 -->
     <section class="sheet-wrapper" id="sheetWrapper">
       <div class="sheet" id="sheet">
-        <!-- La grilla se genera dinámicamente por JS -->
         <div class="sheet-grid" id="sheetGrid"></div>
       </div>
     </section>
 
-    <!-- ===================== INSTRUCCIONES ===================== -->
+    <!-- Instrucciones iniciales -->
     <section class="instructions" id="instructions">
       <div class="instruction-card">
         <span class="inst-icon">①</span>
-        <p>Elegí cuántas páginas querés por hoja</p>
+        <p>Elegí cuántas páginas por hoja</p>
       </div>
       <div class="instruction-card">
         <span class="inst-icon">②</span>
@@ -151,14 +140,11 @@
 
   </main>
 
-  <!-- ===================== FOOTER ===================== -->
   <footer class="app-footer">
     <p>PrintNUp · Sin backend · Funciona 100% en el navegador · <a href="https://github.com/" target="_blank">Ver en GitHub</a></p>
   </footer>
 
-  <!-- Input oculto para agregar imagen a slot individual -->
   <input type="file" id="slotFileInput" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.bmp" hidden />
-
   <script src="app.js"></script>
 </body>
 </html>

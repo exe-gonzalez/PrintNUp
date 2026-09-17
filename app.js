@@ -1,29 +1,81 @@
 /**
  * PrintNUp — app.js
- * Lógica principal: carga de archivos, grilla dinámica,
- * detección de orientación automática e impresión.
- *
- * Dependencias: PDF.js (CDN en index.html)
+ * Carga PDFs/imágenes y los organiza en una hoja A4 para imprimir.
+ * Sin frameworks, sin backend. Dependencia: PDF.js (CDN).
  */
 
-/* ============================================================
-   CONFIGURAR PDF.js worker
-   ============================================================ */
+/* ── PDF.js worker ── */
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+
+/* ============================================================
+   TABLA DE LAYOUTS
+   Para cada nup define cols×rows óptimos según orientación.
+
+   Criterio: las celdas deben tener la misma proporción que
+   una página A4 miniatura (portrait ≈ 0.707 | landscape ≈ 1.414).
+   Para cada nup se elige el par (cols, rows) tal que:
+     - cols × rows >= nup  (no sobran más de ~1 celda por fila)
+     - el ratio cols/rows maximiza el uso del espacio de la hoja
+   ============================================================ */
+const LAYOUTS = {
+  //  nup  portrait          landscape
+   2: { p: {c:1,r:2},  l: {c:2,r:1}  },
+   3: { p: {c:1,r:3},  l: {c:3,r:1}  },
+   4: { p: {c:2,r:2},  l: {c:2,r:2}  },
+   6: { p: {c:2,r:3},  l: {c:3,r:2}  },
+   8: { p: {c:2,r:4},  l: {c:4,r:2}  },
+  10: { p: {c:2,r:5},  l: {c:5,r:2}  },
+  12: { p: {c:3,r:4},  l: {c:4,r:3}  },
+  14: { p: {c:2,r:7},  l: {c:7,r:2}  },
+  16: { p: {c:4,r:4},  l: {c:4,r:4}  },
+  18: { p: {c:3,r:6},  l: {c:6,r:3}  },
+  20: { p: {c:4,r:5},  l: {c:5,r:4}  },
+  22: { p: {c:4,r:6},  l: {c:6,r:4}  },  // 24 celdas, 2 vacías
+  24: { p: {c:4,r:6},  l: {c:6,r:4}  },
+  26: { p: {c:4,r:7},  l: {c:7,r:4}  },  // 28 celdas, 2 vacías
+  28: { p: {c:4,r:7},  l: {c:7,r:4}  },
+  30: { p: {c:5,r:6},  l: {c:6,r:5}  },
+  32: { p: {c:4,r:8},  l: {c:8,r:4}  },
+};
+
+/**
+ * Devuelve {cols, rows} para el nup y orientación dados.
+ * Usa la tabla si existe; calcula automáticamente si no.
+ */
+function getGridLayout(nup, orientation) {
+  const isL = orientation === 'landscape';
+  if (LAYOUTS[nup]) {
+    const e = isL ? LAYOUTS[nup].l : LAYOUTS[nup].p;
+    return { cols: e.c, rows: e.r };
+  }
+  // Fallback automático para cualquier nup fuera de tabla
+  // Proporción A4: portrait w/h ≈ 0.707, landscape ≈ 1.414
+  const targetRatio = isL ? (297/210) : (210/297);
+  let best = null, bestScore = Infinity;
+  for (let cols = 1; cols <= nup; cols++) {
+    const rows = Math.ceil(nup / cols);
+    if (cols === 1 && nup > 3) continue;
+    if (rows === 1 && nup > 3) continue;
+    const score = Math.abs((cols / rows) - targetRatio);
+    if (score < bestScore) { bestScore = score; best = { cols, rows }; }
+  }
+  return best || { cols: Math.ceil(Math.sqrt(nup)), rows: Math.ceil(nup / Math.ceil(Math.sqrt(nup))) };
+}
 
 
 /* ============================================================
    ESTADO GLOBAL
    ============================================================ */
 const state = {
-  nup: 2,                   // páginas por hoja
-  orientation: 'auto',      // 'auto' | 'portrait' | 'landscape'
-  currentOrientation: 'portrait', // orientación actualmente activa
-  showNumbers: false,
-  showBorders: true,
-  slots: [],                // array de { imageDataUrl, aspectRatio } | null
-  pendingSlotIndex: null,   // slot que espera un archivo individual
+  nup:                2,
+  orientation:        'auto',     // 'auto' | 'portrait' | 'landscape'
+  currentOrientation: 'portrait',
+  showNumbers:        false,
+  showBorders:        true,
+  slots:              [],
+  pendingSlotIndex:   null,
 };
 
 
@@ -31,21 +83,22 @@ const state = {
    REFERENCIAS DOM
    ============================================================ */
 const dom = {
-  nupSelector:          document.getElementById('nupSelector'),
-  orientationSelector:  document.getElementById('orientationSelector'),
-  fileInput:            document.getElementById('fileInput'),
-  slotFileInput:        document.getElementById('slotFileInput'),
-  btnUpload:            document.getElementById('btnUpload'),
-  btnClear:             document.getElementById('btnClear'),
-  btnPrint:             document.getElementById('btnPrint'),
-  showNumbers:          document.getElementById('showNumbers'),
-  showBorders:          document.getElementById('showBorders'),
-  sheet:                document.getElementById('sheet'),
-  sheetGrid:            document.getElementById('sheetGrid'),
-  orientBadge:          document.getElementById('orientBadge'),
-  slotCount:            document.getElementById('slotCount'),
-  loadingOverlay:       document.getElementById('loadingOverlay'),
-  instructions:         document.getElementById('instructions'),
+  nupSelect:           document.getElementById('nupSelect'),
+  nupPreview:          document.getElementById('nupPreview'),
+  orientationSelector: document.getElementById('orientationSelector'),
+  fileInput:           document.getElementById('fileInput'),
+  slotFileInput:       document.getElementById('slotFileInput'),
+  btnUpload:           document.getElementById('btnUpload'),
+  btnClear:            document.getElementById('btnClear'),
+  btnPrint:            document.getElementById('btnPrint'),
+  showNumbers:         document.getElementById('showNumbers'),
+  showBorders:         document.getElementById('showBorders'),
+  sheet:               document.getElementById('sheet'),
+  sheetGrid:           document.getElementById('sheetGrid'),
+  orientBadge:         document.getElementById('orientBadge'),
+  slotCount:           document.getElementById('slotCount'),
+  loadingOverlay:      document.getElementById('loadingOverlay'),
+  instructions:        document.getElementById('instructions'),
 };
 
 
@@ -53,25 +106,21 @@ const dom = {
    INICIALIZACIÓN
    ============================================================ */
 function init() {
-  // Inicializar slots vacíos
   resetSlots();
 
-  // Eventos de controles
-  dom.nupSelector.addEventListener('click', onNupClick);
+  dom.nupSelect.addEventListener('change', onNupChange);
   dom.orientationSelector.addEventListener('click', onOrientClick);
   dom.btnUpload.addEventListener('click', () => dom.fileInput.click());
   dom.fileInput.addEventListener('change', onFileInputChange);
   dom.slotFileInput.addEventListener('change', onSlotFileInputChange);
   dom.btnClear.addEventListener('click', clearAll);
   dom.btnPrint.addEventListener('click', printSheet);
-  dom.showNumbers.addEventListener('change', onToggleNumbers);
-  dom.showBorders.addEventListener('change', onToggleBorders);
+  dom.showNumbers.addEventListener('change', e => { state.showNumbers = e.target.checked; render(); });
+  dom.showBorders.addEventListener('change', e => { state.showBorders = e.target.checked; render(); });
 
-  // Drag & drop en el body
   document.body.addEventListener('dragover', e => e.preventDefault());
   document.body.addEventListener('drop', onBodyDrop);
 
-  // Renderizar estado inicial
   render();
 }
 
@@ -79,485 +128,337 @@ function init() {
 /* ============================================================
    GESTIÓN DE SLOTS
    ============================================================ */
-
-/** Reinicia el array de slots según el nup actual */
 function resetSlots() {
   state.slots = Array(state.nup).fill(null);
 }
 
-/** Llena los slots con las imágenes cargadas, preservando los ya existentes */
 function fillSlotsWithImages(imageObjects) {
-  // Busca slots vacíos y los va llenando
-  let imgIndex = 0;
-  for (let i = 0; i < state.slots.length && imgIndex < imageObjects.length; i++) {
-    if (state.slots[i] === null) {
-      state.slots[i] = imageObjects[imgIndex++];
-    }
+  let imgIdx = 0;
+  for (let i = 0; i < state.slots.length && imgIdx < imageObjects.length; i++) {
+    if (state.slots[i] === null) state.slots[i] = imageObjects[imgIdx++];
   }
-  // Si sobran imágenes, ampliar los slots (siempre mantenemos exactamente `nup` slots)
-  // Las imágenes extra se ignoran (ya se distribuyen en el primer ciclo)
 }
 
-/** Cambia el número de páginas por hoja preservando imágenes ya cargadas */
 function changeNup(newNup) {
-  const oldSlots = [...state.slots];
+  const images = state.slots.filter(s => s !== null);
   state.nup = newNup;
   state.slots = Array(newNup).fill(null);
-  // Re-distribuir imágenes existentes
-  const images = oldSlots.filter(s => s !== null);
-  images.forEach((img, i) => {
-    if (i < newNup) state.slots[i] = img;
-  });
+  images.forEach((img, i) => { if (i < newNup) state.slots[i] = img; });
 }
 
 
 /* ============================================================
-   CÁLCULO DE ORIENTACIÓN
+   DETECCIÓN DE ORIENTACIÓN
    ============================================================ */
-
-/**
- * Detecta la mejor orientación según las imágenes cargadas.
- * @returns {'portrait'|'landscape'}
- */
 function detectOrientation() {
-  const filledSlots = state.slots.filter(s => s !== null);
-  if (filledSlots.length === 0) return 'portrait'; // default
-
-  let portraitCount = 0;
-  let landscapeCount = 0;
-
-  filledSlots.forEach(slot => {
-    if (slot.aspectRatio < 1) portraitCount++;   // alto > ancho
-    else if (slot.aspectRatio > 1) landscapeCount++;
-    // aspectRatio === 1 → cuadrada, no cuenta
-  });
-
-  if (portraitCount === 0 && landscapeCount === 0) return 'portrait';
-
-  if (portraitCount >= landscapeCount) {
-    // Predominan verticales → portrait minimiza espacio vacío
-    return bestOrientationForLayout('portrait');
-  } else {
-    // Predominan horizontales → landscape
-    return bestOrientationForLayout('landscape');
-  }
+  const filled = state.slots.filter(s => s !== null);
+  if (!filled.length) return 'portrait';
+  let p = 0, l = 0;
+  filled.forEach(s => { if (s.aspectRatio < 1) p++; else if (s.aspectRatio > 1) l++; });
+  if (p === 0 && l === 0) return 'portrait';
+  // Para nup <= 3 con contenido landscape, landscape es mejor
+  if (l > p && state.nup <= 3) return 'landscape';
+  return p >= l ? 'portrait' : 'landscape';
 }
 
-/**
- * Dado un sesgo, elige la orientación que mejor se adapta al layout.
- * Para 2, 3 páginas: la orientación del contenido suele ser óptima.
- * Para 4, 6, 8: la grilla es simétrica, el contenido decide.
- */
-function bestOrientationForLayout(bias) {
-  // Para NUP = 2 o 3 con imágenes landscape, landscape puede ser mejor
-  if (state.nup === 2 && bias === 'landscape') return 'landscape';
-  if (state.nup === 3 && bias === 'landscape') return 'landscape';
-  return bias;
-}
-
-/** Actualiza la orientación activa */
 function updateActiveOrientation() {
-  if (state.orientation === 'auto') {
-    state.currentOrientation = detectOrientation();
-  } else {
-    state.currentOrientation = state.orientation;
-  }
-}
-
-
-/* ============================================================
-   CÁLCULO DE LAYOUT DE GRILLA
-   ============================================================ */
-
-/**
- * Devuelve { cols, rows } según nup y orientación.
- */
-function getGridLayout(nup, orientation) {
-  const isLandscape = orientation === 'landscape';
-  switch (nup) {
-    case 2:  return isLandscape ? { cols: 2, rows: 1 } : { cols: 1, rows: 2 };
-    case 3:  return isLandscape ? { cols: 3, rows: 1 } : { cols: 1, rows: 3 };
-    case 4:  return { cols: 2, rows: 2 }; // igual en ambas
-    case 6:  return isLandscape ? { cols: 3, rows: 2 } : { cols: 2, rows: 3 };
-    case 8:  return isLandscape ? { cols: 4, rows: 2 } : { cols: 2, rows: 4 };
-    case 16: return isLandscape ? { cols: 4, rows: 4 } : { cols: 4, rows: 4 }; // 4×4 en ambas
-    case 32: return isLandscape ? { cols: 8, rows: 4 } : { cols: 4, rows: 8 };
-    default: return { cols: 2, rows: 2 };
-  }
+  state.currentOrientation = state.orientation === 'auto'
+    ? detectOrientation()
+    : state.orientation;
 }
 
 
 /* ============================================================
    RENDER PRINCIPAL
    ============================================================ */
-
 function render() {
   updateActiveOrientation();
   renderSheet();
   renderGrid();
+  drawNupPreview();
   renderIndicator();
-  renderPrintCSS();
   toggleInstructions();
 }
 
-/** Aplica clases de orientación a la hoja */
 function renderSheet() {
   dom.sheet.classList.toggle('landscape', state.currentOrientation === 'landscape');
-  dom.sheet.classList.toggle('portrait-mode', state.currentOrientation === 'portrait');
 }
 
-/** Genera la grilla de slots */
 function renderGrid() {
   const { cols, rows } = getGridLayout(state.nup, state.currentOrientation);
+
+  // Gap dinámico: celdas grandes → más espacio; celdas pequeñas → menos
+  const maxDim = Math.max(cols, rows);
+  const gap = maxDim <= 3 ? 4 : maxDim <= 5 ? 3 : maxDim <= 8 ? 2 : 1;
+
   dom.sheetGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   dom.sheetGrid.style.gridTemplateRows    = `repeat(${rows}, 1fr)`;
+  dom.sheetGrid.style.gap                 = `${gap}px`;
   dom.sheetGrid.innerHTML = '';
 
-  for (let i = 0; i < state.nup; i++) {
-    const slotEl = createSlotElement(i, state.slots[i]);
+  // Las celdas totales pueden ser más que nup (ej: 22 en grilla 4×6=24)
+  const totalCells = cols * rows;
+  for (let i = 0; i < totalCells; i++) {
+    const isBeyond = i >= state.nup; // celda fuera del nup → vacía sin botón
+    const slotEl = createSlotElement(i, state.slots[i] || null, isBeyond, cols, rows);
     dom.sheetGrid.appendChild(slotEl);
   }
 }
 
-/** Crea el elemento DOM para un slot */
-function createSlotElement(index, slotData) {
-  const slotEl = document.createElement('div');
-  slotEl.className = 'slot';
-  if (state.showBorders) slotEl.classList.add('has-border');
-  slotEl.dataset.index = index;
+/** Crea el div de un slot. isBeyond = celda relleno (no cuenta como slot útil) */
+function createSlotElement(index, slotData, isBeyond, cols, rows) {
+  const el = document.createElement('div');
+  el.className = 'slot';
+  if (state.showBorders) el.classList.add('has-border');
+  if (isBeyond) el.classList.add('beyond');
+
+  // Marcar como "tiny" cuando hay muchas celdas para adaptar el UI
+  const maxDim = Math.max(cols, rows);
+  if (maxDim >= 6) el.classList.add('tiny');
+
+  el.dataset.index = index;
+
+  if (isBeyond) {
+    // Celda de relleno: solo fondo gris, sin interacción
+    el.style.background = '#f0ece4';
+    return el;
+  }
 
   if (slotData) {
-    // Slot con imagen
-    slotEl.classList.add('filled');
-
+    el.classList.add('filled');
     const img = document.createElement('img');
     img.src = slotData.imageDataUrl;
     img.alt = `Página ${index + 1}`;
     img.draggable = false;
-    slotEl.appendChild(img);
+    el.appendChild(img);
 
-    // Overlay de acciones
-    const actionsEl = document.createElement('div');
-    actionsEl.className = 'slot-actions';
-    actionsEl.innerHTML = `
-      <button class="slot-action-btn replace-btn" data-index="${index}">⇄ Reemplazar</button>
-      <button class="slot-action-btn delete-btn" data-index="${index}">✕ Quitar</button>
-    `;
-    actionsEl.querySelector('.replace-btn').addEventListener('click', () => openSlotFilePicker(index));
-    actionsEl.querySelector('.delete-btn').addEventListener('click', () => removeSlotImage(index));
-    slotEl.appendChild(actionsEl);
+    const actions = document.createElement('div');
+    actions.className = 'slot-actions';
+    actions.innerHTML = `
+      <button class="slot-action-btn replace-btn">⇄ Reemplazar</button>
+      <button class="slot-action-btn delete-btn">✕ Quitar</button>`;
+    actions.querySelector('.replace-btn').addEventListener('click', () => openSlotFilePicker(index));
+    actions.querySelector('.delete-btn').addEventListener('click', () => { state.slots[index] = null; render(); });
+    el.appendChild(actions);
 
   } else {
-    // Slot vacío → botón "+"
     const addBtn = document.createElement('button');
     addBtn.className = 'slot-add-btn';
     addBtn.innerHTML = `<span class="plus-icon">+</span><span>Agregar</span>`;
     addBtn.addEventListener('click', () => openSlotFilePicker(index));
-    slotEl.appendChild(addBtn);
+    el.appendChild(addBtn);
 
-    // Drag & drop individual por slot
-    slotEl.addEventListener('dragover', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      slotEl.classList.add('drag-over');
-    });
-    slotEl.addEventListener('dragleave', () => slotEl.classList.remove('drag-over'));
-    slotEl.addEventListener('drop', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      slotEl.classList.remove('drag-over');
-      const files = e.dataTransfer.files;
-      if (files.length > 0) processFilesForSlot([files[0]], index);
+    el.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); el.classList.add('drag-over'); });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      el.classList.remove('drag-over');
+      const f = e.dataTransfer.files;
+      if (f.length) processFilesForSlot([f[0]], index);
     });
   }
 
-  // Numeración opcional
   if (state.showNumbers) {
-    const numEl = document.createElement('span');
-    numEl.className = 'slot-number';
-    numEl.textContent = index + 1;
-    slotEl.appendChild(numEl);
+    const num = document.createElement('span');
+    num.className = 'slot-number';
+    num.textContent = index + 1;
+    el.appendChild(num);
   }
 
-  return slotEl;
+  return el;
 }
 
-/** Actualiza el indicador de orientación y conteo */
+/**
+ * Dibuja el canvas miniatura que muestra cómo quedará la grilla.
+ * Usa proporciones A4 reales para que sea fiel al resultado.
+ */
+function drawNupPreview() {
+  const canvas = dom.nupPreview;
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const { cols, rows } = getGridLayout(state.nup, state.currentOrientation);
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Fondo de la hoja (blanco con borde)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#b8b2a7';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  const pad = 2, gap = 1;
+  const cellW = (W - pad * 2 - gap * (cols - 1)) / cols;
+  const cellH = (H - pad * 2 - gap * (rows - 1)) / rows;
+  const totalCells = cols * rows;
+
+  for (let i = 0; i < totalCells; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = pad + col * (cellW + gap);
+    const y = pad + row * (cellH + gap);
+    // Celdas de relleno (más de nup) en gris más claro
+    ctx.fillStyle = i < state.nup ? '#c23a08' : '#e2ddd4';
+    ctx.globalAlpha = i < state.nup ? 0.25 : 0.5;
+    ctx.fillRect(x, y, cellW, cellH);
+  }
+  ctx.globalAlpha = 1;
+}
+
 function renderIndicator() {
   const icon = state.currentOrientation === 'landscape' ? '▭' : '▯';
   const name = state.currentOrientation === 'landscape' ? 'Horizontal' : 'Vertical';
-  const modeTag = state.orientation === 'auto' ? ' — Auto' : '';
-  dom.orientBadge.textContent = `${icon} ${name}${modeTag}`;
-
+  const tag  = state.orientation === 'auto' ? ' — Auto' : '';
+  dom.orientBadge.textContent = `${icon} ${name}${tag}`;
   const filled = state.slots.filter(s => s !== null).length;
   dom.slotCount.textContent = `${filled} / ${state.nup} espacios usados`;
 }
 
-/** Actualiza variables CSS de impresión */
-function renderPrintCSS() {
-  // Controla si se muestran números en impresión
-  document.documentElement.style.setProperty(
-    '--print-numbers',
-    state.showNumbers ? 'block' : 'none'
-  );
-}
-
-/** Muestra u oculta instrucciones */
 function toggleInstructions() {
-  const hasContent = state.slots.some(s => s !== null);
-  dom.instructions.style.display = hasContent ? 'none' : 'flex';
+  dom.instructions.style.display = state.slots.some(s => s !== null) ? 'none' : 'flex';
 }
 
 
 /* ============================================================
    PROCESAMIENTO DE ARCHIVOS
    ============================================================ */
-
-/** Evento: input[type=file] general */
 async function onFileInputChange(e) {
   const files = Array.from(e.target.files);
   e.target.value = '';
-  if (!files.length) return;
-  await processFiles(files);
+  if (files.length) await processFiles(files);
 }
-
-/** Evento: input[type=file] para slot individual */
 async function onSlotFileInputChange(e) {
   const files = Array.from(e.target.files);
   e.target.value = '';
-  if (!files.length || state.pendingSlotIndex === null) return;
-  await processFilesForSlot(files, state.pendingSlotIndex);
-  state.pendingSlotIndex = null;
+  if (files.length && state.pendingSlotIndex !== null) {
+    await processFilesForSlot(files, state.pendingSlotIndex);
+    state.pendingSlotIndex = null;
+  }
 }
-
-/** Drop en el body (fuera de slots) */
 async function onBodyDrop(e) {
   e.preventDefault();
   const files = Array.from(e.dataTransfer.files);
-  if (!files.length) return;
-  await processFiles(files);
+  if (files.length) await processFiles(files);
 }
-
-/** Abre el selector de archivo para un slot específico */
 function openSlotFilePicker(index) {
   state.pendingSlotIndex = index;
   dom.slotFileInput.click();
 }
 
-/**
- * Procesa archivos genéricos y los distribuye en slots vacíos.
- */
 async function processFiles(files) {
   showLoading(true);
   try {
-    const imageObjects = [];
-    for (const file of files) {
-      if (file.type === 'application/pdf') {
-        const pages = await extractPdfPages(file);
-        imageObjects.push(...pages);
-      } else if (file.type.startsWith('image/')) {
-        const imgObj = await loadImageFile(file);
-        imageObjects.push(imgObj);
-      }
+    const imgs = [];
+    for (const f of files) {
+      if (f.type === 'application/pdf')       imgs.push(...await extractPdfPages(f));
+      else if (f.type.startsWith('image/'))   imgs.push(await loadImageFile(f));
     }
-    fillSlotsWithImages(imageObjects);
+    fillSlotsWithImages(imgs);
     render();
-  } catch (err) {
-    console.error('Error procesando archivos:', err);
-    alert('Hubo un error al procesar los archivos. Verificá que sean PDF o imágenes válidas.');
-  } finally {
-    showLoading(false);
-  }
+  } catch(e) {
+    console.error(e);
+    alert('Error al procesar el archivo. Verificá que sea un PDF o imagen válida.');
+  } finally { showLoading(false); }
 }
 
-/**
- * Procesa archivos para un slot específico (reemplazar o agregar).
- */
 async function processFilesForSlot(files, slotIndex) {
   showLoading(true);
   try {
-    const imageObjects = [];
-    for (const file of files) {
-      if (file.type === 'application/pdf') {
-        const pages = await extractPdfPages(file);
-        imageObjects.push(...pages);
-      } else if (file.type.startsWith('image/')) {
-        const imgObj = await loadImageFile(file);
-        imageObjects.push(imgObj);
-      }
+    const imgs = [];
+    for (const f of files) {
+      if (f.type === 'application/pdf')       imgs.push(...await extractPdfPages(f));
+      else if (f.type.startsWith('image/'))   imgs.push(await loadImageFile(f));
     }
-    if (imageObjects.length > 0) {
-      state.slots[slotIndex] = imageObjects[0]; // Solo la primera imagen
-    }
+    if (imgs.length) state.slots[slotIndex] = imgs[0];
     render();
-  } catch (err) {
-    console.error('Error en slot:', err);
-    alert('Hubo un error al cargar el archivo.');
-  } finally {
-    showLoading(false);
-  }
+  } catch(e) {
+    console.error(e);
+    alert('Error al cargar el archivo.');
+  } finally { showLoading(false); }
 }
 
-/**
- * Extrae todas las páginas de un PDF como imágenes.
- * @param {File} file
- * @returns {Promise<Array<{imageDataUrl, aspectRatio}>>}
- */
 async function extractPdfPages(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const pages = [];
-  const scale = 2.0; // resolución para previsualización
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale });
-
-    const canvas = document.createElement('canvas');
-    canvas.width  = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
-
-    await page.render({ canvasContext: ctx, viewport }).promise;
-
-    pages.push({
-      imageDataUrl: canvas.toDataURL('image/jpeg', 0.92),
-      aspectRatio:  viewport.width / viewport.height,
-    });
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const page     = await pdf.getPage(n);
+    const viewport = page.getViewport({ scale: 2.0 });
+    const canvas   = document.createElement('canvas');
+    canvas.width   = viewport.width;
+    canvas.height  = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    pages.push({ imageDataUrl: canvas.toDataURL('image/jpeg', 0.92), aspectRatio: viewport.width / viewport.height });
   }
   return pages;
 }
 
-/**
- * Carga una imagen y devuelve { imageDataUrl, aspectRatio }.
- * @param {File} file
- * @returns {Promise<{imageDataUrl, aspectRatio}>}
- */
 function loadImageFile(file) {
-  return new Promise((resolve, reject) => {
+  return new Promise((res, rej) => {
     const reader = new FileReader();
     reader.onload = e => {
-      const dataUrl = e.target.result;
       const img = new Image();
-      img.onload = () => {
-        resolve({
-          imageDataUrl: dataUrl,
-          aspectRatio:  img.naturalWidth / img.naturalHeight,
-        });
-      };
-      img.onerror = reject;
-      img.src = dataUrl;
+      img.onload = () => res({ imageDataUrl: e.target.result, aspectRatio: img.naturalWidth / img.naturalHeight });
+      img.onerror = rej;
+      img.src = e.target.result;
     };
-    reader.onerror = reject;
+    reader.onerror = rej;
     reader.readAsDataURL(file);
   });
 }
 
 
 /* ============================================================
-   ACCIONES SOBRE SLOTS
-   ============================================================ */
-
-function removeSlotImage(index) {
-  state.slots[index] = null;
-  render();
-}
-
-
-/* ============================================================
    HANDLERS DE CONTROLES
    ============================================================ */
-
-function onNupClick(e) {
-  const btn = e.target.closest('.nup-btn');
-  if (!btn) return;
-  const newNup = parseInt(btn.dataset.nup, 10);
-  if (newNup === state.nup) return;
-
-  // Actualizar UI del selector
-  dom.nupSelector.querySelectorAll('.nup-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-
-  changeNup(newNup);
+function onNupChange() {
+  const n = parseInt(dom.nupSelect.value, 10);
+  if (n === state.nup) return;
+  changeNup(n);
   render();
 }
 
 function onOrientClick(e) {
   const btn = e.target.closest('.orient-btn');
   if (!btn) return;
-  const orient = btn.dataset.orient;
-  state.orientation = orient;
-
+  state.orientation = btn.dataset.orient;
   dom.orientationSelector.querySelectorAll('.orient-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-
   render();
 }
-
-function onToggleNumbers(e) {
-  state.showNumbers = e.target.checked;
-  render();
-}
-
-function onToggleBorders(e) {
-  state.showBorders = e.target.checked;
-  render();
-}
-
-
-/* ============================================================
-   LIMPIAR TODO
-   ============================================================ */
 
 function clearAll() {
-  if (!confirm('¿Querés limpiar todos los espacios?')) return;
+  if (!confirm('¿Limpiar todos los espacios?')) return;
   resetSlots();
   state.orientation = 'auto';
-
-  // Resetear UI de orientación
   dom.orientationSelector.querySelectorAll('.orient-btn').forEach(b => b.classList.remove('active'));
   dom.orientationSelector.querySelector('[data-orient="auto"]').classList.add('active');
-
   render();
 }
 
 
 /* ============================================================
-   IMPRESIÓN — via Canvas → imagen única → nueva pestaña
-   ============================================================
-   Por qué este enfoque es el más robusto en mobile:
-
-   1. iframe oculto: en Android Chrome, los iframes con
-      visibility:hidden no renderizan imágenes base64 antes
-      de print() → hoja en blanco.
-
-   2. window.open + document.write: Chrome mobile puede
-      bloquear popups si no están en el mismo tick del click.
-
-   3. SOLUCIÓN: dibujar toda la grilla en un <canvas> en
-      memoria → exportar como una sola imagen JPEG → abrir
-      en nueva pestaña via Blob URL (permitido en tick de click).
-      Una imagen única nunca puede partirse en varias páginas.
+   IMPRESIÓN — Canvas → imagen única → nueva pestaña
+   Funciona en desktop y mobile (Android Chrome).
    ============================================================ */
-
 function printSheet() {
   const orientation = state.currentOrientation;
   const { cols, rows } = getGridLayout(state.nup, orientation);
 
-  // Dimensiones A4 a 150 dpi para buena calidad
-  const DPI   = 150;
-  const MM2PX = DPI / 25.4;
-
+  // A4 a 150 dpi
+  const DPI    = 150;
+  const MM2PX  = DPI / 25.4;
   const pageW  = orientation === 'landscape' ? 297 : 210; // mm
   const pageH  = orientation === 'landscape' ? 210 : 297;
   const margin = 6;  // mm
-  const gap    = 2;  // mm entre celdas
+  const maxDim = Math.max(cols, rows);
+  const gapMM  = maxDim <= 3 ? 2 : maxDim <= 5 ? 1.5 : maxDim <= 8 ? 1 : 0.5;
 
   const canvasW = Math.round(pageW  * MM2PX);
   const canvasH = Math.round(pageH  * MM2PX);
   const mPx     = Math.round(margin * MM2PX);
-  const gPx     = Math.round(gap    * MM2PX);
-
+  const gPx     = Math.round(gapMM  * MM2PX);
   const innerW  = canvasW - mPx * 2;
   const innerH  = canvasH - mPx * 2;
   const cellW   = Math.floor((innerW - gPx * (cols - 1)) / cols);
@@ -567,112 +468,83 @@ function printSheet() {
   canvas.width  = canvasW;
   canvas.height = canvasH;
   const ctx     = canvas.getContext('2d');
-
-  // Fondo blanco
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  // Dibuja todas las celdas; llama a done() cuando termina
+  // Abrir la ventana en el mismo tick del click (evita popup blocker)
+  const printWin = window.open('', '_blank');
+  if (!printWin) {
+    alert('Tu navegador bloqueó la ventana de impresión.\nPermití ventanas emergentes para este sitio e intentá de nuevo.');
+    return;
+  }
+  printWin.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Preparando…</title>
+    <style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#e8e3d8;color:#444;}</style>
+    </head><body><p>Preparando impresión…</p></body></html>`);
+  printWin.document.close();
+
+  // Dibujar todas las celdas en el canvas
   function drawAllCells(done) {
     let pending = 0;
+    const totalCells = cols * rows;
 
-    for (let i = 0; i < state.nup; i++) {
+    for (let i = 0; i < totalCells; i++) {
       const col = i % cols;
       const row = Math.floor(i / cols);
       const x   = mPx + col * (cellW + gPx);
       const y   = mPx + row * (cellH + gPx);
 
-      // Fondo blanco de celda
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(x, y, cellW, cellH);
 
-      // Borde opcional
       if (state.showBorders) {
         ctx.strokeStyle = '#cccccc';
         ctx.lineWidth   = 1;
         ctx.strokeRect(x + 0.5, y + 0.5, cellW - 1, cellH - 1);
       }
 
+      // Celda fuera del nup útil → fondo neutro
+      if (i >= state.nup) {
+        ctx.fillStyle = '#f0ece4';
+        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+        continue;
+      }
+
       const slot = state.slots[i];
       if (!slot) {
-        // Celda vacía
         ctx.fillStyle = '#f8f8f8';
-        ctx.fillRect(x + 2, y + 2, cellW - 4, cellH - 4);
+        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
         continue;
       }
 
       pending++;
       const img = new Image();
-
-      // IIFE para capturar variables por valor en el closure
       (function capture(imgEl, cx, cy, cw, ch, idx) {
-        function onLoad() {
-          // object-fit: contain manual
+        imgEl.onload = function() {
           const imgAR  = imgEl.naturalWidth / imgEl.naturalHeight;
           const cellAR = cw / ch;
-          let dw, dh, dx, dy;
-          if (imgAR > cellAR) {
-            dw = cw;
-            dh = cw / imgAR;
-          } else {
-            dh = ch;
-            dw = ch * imgAR;
-          }
-          dx = cx + (cw - dw) / 2;
-          dy = cy + (ch - dh) / 2;
-          ctx.drawImage(imgEl, dx, dy, dw, dh);
+          let dw, dh;
+          if (imgAR > cellAR) { dw = cw; dh = cw / imgAR; }
+          else                { dh = ch; dw = ch * imgAR;  }
+          ctx.drawImage(imgEl, cx + (cw - dw) / 2, cy + (ch - dh) / 2, dw, dh);
 
-          // Número opcional
           if (state.showNumbers) {
-            const fontSize = Math.max(8, Math.round(7 * MM2PX / 3.78));
-            ctx.font         = `${fontSize}px monospace`;
-            ctx.fillStyle    = '#bbbbbb';
-            ctx.textAlign    = 'right';
-            ctx.textBaseline = 'bottom';
-            ctx.fillText(String(idx + 1), cx + cw - 4, cy + ch - 4);
+            const fs = Math.max(6, Math.round(5 * MM2PX / 3.78));
+            ctx.font = `${fs}px monospace`;
+            ctx.fillStyle = '#bbbbbb';
+            ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+            ctx.fillText(String(idx + 1), cx + cw - 3, cy + ch - 3);
           }
-
           pending--;
           if (pending === 0) done();
-        }
-
-        imgEl.onload  = onLoad;
+        };
         imgEl.onerror = function() { pending--; if (pending === 0) done(); };
-        imgEl.src     = slot.imageDataUrl;
+        imgEl.src = slot.imageDataUrl;
       })(img, x, y, cellW, cellH, i);
     }
-
-    // Sin imágenes (todos slots vacíos)
     if (pending === 0) done();
   }
 
-  // Abrir ventana ANTES de cualquier async (mismo tick del click)
-  // para que los popup blockers no la cierren
-  const printWin = window.open('', '_blank');
-
-  if (!printWin) {
-    alert(
-      'Tu navegador bloqueó la ventana de impresión.\n' +
-      'Permitî las ventanas emergentes para este sitio e intentá de nuevo.'
-    );
-    return;
-  }
-
-  // Mostrar mensaje de espera mientras se procesa el canvas
-  printWin.document.write(`<!DOCTYPE html><html><head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Preparando impresión…</title>
-    <style>
-      body { font-family: system-ui,sans-serif; display:flex;
-             align-items:center; justify-content:center;
-             height:100vh; margin:0; background:#e8e3d8; color:#444; }
-      p { font-size:16px; }
-    </style>
-    </head><body><p>Preparando impresión…</p></body></html>`);
-  printWin.document.close();
-
-  // Procesar canvas de forma asíncrona
   drawAllCells(function() {
     const dataUrl = canvas.toDataURL('image/jpeg', 0.93);
 
@@ -681,69 +553,26 @@ function printSheet() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Imprimir</title>
+<title>Imprimir — PrintNUp</title>
 <style>
-  @page {
-    size: ${pageW}mm ${pageH}mm;
-    margin: 0;
-  }
+  @page { size: ${pageW}mm ${pageH}mm; margin: 0; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body {
-    width: ${pageW}mm;
-    height: ${pageH}mm;
-    background: #fff;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  img.sheet-img {
-    display: block;
-    width: ${pageW}mm;
-    height: ${pageH}mm;
-  }
-  /* Vista en pantalla (móvil) */
+  html, body { width:${pageW}mm; height:${pageH}mm; background:#fff;
+    -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  img.sheet-img { display:block; width:${pageW}mm; height:${pageH}mm; }
   @media screen {
-    html, body {
-      width: 100%;
-      height: auto;
-      min-height: 100vh;
-      background: #e8e3d8;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 16px;
-      gap: 16px;
-    }
-    img.sheet-img {
-      width: auto;
-      height: auto;
-      max-width: 100%;
-      max-height: 75vh;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.22);
-    }
-    .info {
-      font-family: system-ui, sans-serif;
-      font-size: 13px;
-      color: #666;
-      text-align: center;
-    }
-    .print-btn {
-      padding: 12px 36px;
-      background: #d4420a;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      font-size: 15px;
-      font-weight: 700;
-      cursor: pointer;
-      font-family: system-ui, sans-serif;
-    }
+    html,body { width:100%; height:auto; min-height:100vh; background:#e8e3d8;
+      display:flex; flex-direction:column; align-items:center; padding:16px; gap:16px; }
+    img.sheet-img { width:auto; height:auto; max-width:100%; max-height:75vh;
+      box-shadow:0 4px 24px rgba(0,0,0,0.22); }
+    .info { font-family:system-ui,sans-serif; font-size:13px; color:#666; text-align:center; }
+    .print-btn { padding:12px 36px; background:#c23a08; color:#fff; border:none;
+      border-radius:6px; font-size:15px; font-weight:700; cursor:pointer;
+      font-family:system-ui,sans-serif; }
   }
   @media print {
-    .info, .print-btn { display: none !important; }
-    img.sheet-img {
-      width: ${pageW}mm !important;
-      height: ${pageH}mm !important;
-    }
+    .info,.print-btn { display:none!important; }
+    img.sheet-img { width:${pageW}mm!important; height:${pageH}mm!important; }
   }
 </style>
 </head>
@@ -752,15 +581,13 @@ function printSheet() {
   <img class="sheet-img" src="${dataUrl}" alt="Hoja A4">
   <button class="print-btn" onclick="window.print()">⎙ Imprimir</button>
   <script>
-    // Desktop: abrir diálogo automáticamente
     if (!/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
-      setTimeout(function() { window.print(); }, 300);
+      setTimeout(function(){ window.print(); }, 300);
     }
-  </script>
+  <\/script>
 </body>
 </html>`;
 
-    // Reemplazar el contenido de la ventana ya abierta
     printWin.document.open();
     printWin.document.write(html);
     printWin.document.close();
@@ -768,16 +595,8 @@ function printSheet() {
 }
 
 
-/* ============================================================
-   UTILIDADES
-   ============================================================ */
+/* ── Utilidades ── */
+function showLoading(v) { dom.loadingOverlay.style.display = v ? 'flex' : 'none'; }
 
-function showLoading(visible) {
-  dom.loadingOverlay.style.display = visible ? 'flex' : 'none';
-}
-
-
-/* ============================================================
-   ARRANQUE
-   ============================================================ */
+/* ── Arranque ── */
 document.addEventListener('DOMContentLoaded', init);
